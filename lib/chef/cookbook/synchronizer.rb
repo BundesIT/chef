@@ -45,7 +45,7 @@ class Chef
       unless Chef::Config[:solo] || skip_removal
         # Delete each file in the cache that we didn't encounter in the
         # manifest.
-        cache.find(File.join(%w{cookbooks ** *})).each do |cache_filename|
+        cache.find(File.join(%w{cookbooks ** {*,.*}})).each do |cache_filename|
           unless @valid_cache_entries[cache_filename]
             Chef::Log.info("Removing #{cache_filename} from the cache; it is no longer needed by chef-client.")
             cache.delete(cache_filename)
@@ -140,6 +140,7 @@ class Chef
       Chef::Log.debug("Cookbooks detail: #{cookbooks.inspect}")
 
       clear_obsoleted_cookbooks
+      clear_obsoleted_files
 
       queue = Chef::Util::ThreadedJobQueue.new
 
@@ -187,7 +188,7 @@ class Chef
 
       @events.cookbook_clean_start
       # Remove all cookbooks no longer relevant to this node
-      cache.find(File.join(%w{cookbooks ** *})).each do |cache_file|
+      cache.find(File.join(%w{cookbooks ** {*,.*}})).each do |cache_file|
         cache_file =~ /^cookbooks\/([^\/]+)\//
         unless have_cookbook?($1)
           Chef::Log.info("Removing #{cache_file} from the cache; its cookbook is no longer needed on this client.")
@@ -196,6 +197,23 @@ class Chef
         end
       end
       @events.cookbook_clean_complete
+    end
+
+    # Clears obsoleted files out of cookbooks that we do have.  Note that we must
+    # clean obsoleted files from cookbooks we use even when skip_removal is true.
+    def clear_obsoleted_files
+      cache.find(File.join(%w{cookbooks ** {*,.*}})).each do |cache_file|
+        md = cache_file.match(/^cookbooks\/([^\/]+)\/([^\/]+)\/(.*)/)
+        next unless md
+        ( cookbook_name, segment, file ) = md[1..3]
+        if have_cookbook?(cookbook_name)
+          cookbook = @cookbooks_by_name[cookbook_name]
+          if cookbook.manifest[segment].select{ |manifest_record| manifest_record["path"] == "#{segment}/#{file}" }.empty?
+            Chef::Log.info("Removing #{cache_file} from the cache; its is no longer in the cookbook manifest.")
+            cache.delete(cache_file)
+          end
+        end
+      end
     end
 
     def update_cookbook_filenames
