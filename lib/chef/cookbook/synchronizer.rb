@@ -140,7 +140,6 @@ class Chef
       Chef::Log.debug("Cookbooks detail: #{cookbooks.inspect}")
 
       clear_obsoleted_cookbooks
-      clear_obsoleted_files
 
       queue = Chef::Util::ThreadedJobQueue.new
 
@@ -180,28 +179,24 @@ class Chef
     # Iterates over cached cookbooks' files, removing files belonging to
     # cookbooks that don't appear in +cookbook_hash+
     def clear_obsoleted_cookbooks
-      unless remove_obsoleted_files
+      @events.cookbook_clean_start
+
+      if remove_obsoleted_files
+        # Remove all cookbooks no longer relevant to this node
+        cache.find(File.join(%w{cookbooks ** {*,.*}})).each do |cache_file|
+          cache_file =~ /^cookbooks\/([^\/]+)\//
+          unless have_cookbook?($1)
+            Chef::Log.info("Removing #{cache_file} from the cache; its cookbook is no longer needed on this client.")
+            cache.delete(cache_file)
+            @events.removed_cookbook_file(cache_file)
+          end
+        end
+      else
         Chef::Log.info("Skipping removal of obsoleted cookbooks from the cache")
         CookbookCacheCleaner.instance.skip_removal = true
-        return
       end
 
-      @events.cookbook_clean_start
-      # Remove all cookbooks no longer relevant to this node
-      cache.find(File.join(%w{cookbooks ** {*,.*}})).each do |cache_file|
-        cache_file =~ /^cookbooks\/([^\/]+)\//
-        unless have_cookbook?($1)
-          Chef::Log.info("Removing #{cache_file} from the cache; its cookbook is no longer needed on this client.")
-          cache.delete(cache_file)
-          @events.removed_cookbook_file(cache_file)
-        end
-      end
-      @events.cookbook_clean_complete
-    end
-
-    # Clears obsoleted files out of cookbooks that we do have.  Note that we must
-    # clean obsoleted files from cookbooks we use even when skip_removal is true.
-    def clear_obsoleted_files
+      # Clean up deleted files in cookbooks that are being used on this node
       cache.find(File.join(%w{cookbooks ** {*,.*}})).each do |cache_file|
         md = cache_file.match(/^cookbooks\/([^\/]+)\/([^\/]+)\/(.*)/)
         next unless md
@@ -211,9 +206,12 @@ class Chef
           if cookbook.manifest[segment].select{ |manifest_record| manifest_record["path"] == "#{segment}/#{file}" }.empty?
             Chef::Log.info("Removing #{cache_file} from the cache; its is no longer in the cookbook manifest.")
             cache.delete(cache_file)
+            @events.removed_cookbook_file(cache_file)
           end
         end
       end
+
+      @events.cookbook_clean_complete
     end
 
     def update_cookbook_filenames
